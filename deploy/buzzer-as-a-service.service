@@ -1,0 +1,23 @@
+[Unit]
+Description=Buzzer as a Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=buzzer-as-a-service
+Environment=BUZZER_ADDR=127.0.0.1:8097
+Environment=BUZZER_DATA=/var/lib/buzzer-as-a-service/groups.json
+Environment=BUZZER_TTL_HOURS=6
+ExecStart=/usr/local/bin/buzzer-as-a-service
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/buzzer-as-a-service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Buzzer as a Service</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section id="entry" class="entry-grid">
+        <div class="brand-panel">
+          <div class="marquee" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+          <p class="eyebrow">Buzzer as a Service</p>
+          <h1>Big button energy for tiny competitions.</h1>
+          <p class="lede">Spin up a room, hand out the code, and let the first buzz win the room.</p>
+          <div class="sample-board" aria-hidden="true"><div class="sample-light"></div><div class="sample-light alt"></div><div class="sample-light pop"></div></div>
+        </div>
+        <div class="entry-panel">
+          <div class="tabs" role="tablist">
+            <button id="startTab" class="tab active" type="button">Start</button>
+            <button id="joinTab" class="tab" type="button">Join</button>
+          </div>
+          <form id="startForm" class="stack">
+            <label>Host name<input id="hostName" autocomplete="nickname" maxlength="32" placeholder="Professor Plink" /></label>
+            <label>Color<input id="hostColor" type="color" value="#ff4d6d" /></label>
+            <button class="primary" type="submit">Start Group</button>
+          </form>
+          <form id="joinForm" class="stack hidden">
+            <label>Group code<input id="joinCode" autocomplete="one-time-code" maxlength="8" placeholder="AB12C" /></label>
+            <label>Your name<input id="playerName" autocomplete="nickname" maxlength="32" placeholder="Captain Clack" /></label>
+            <label>Color<input id="playerColor" type="color" value="#2ec4b6" /></label>
+            <button class="primary" type="submit">Join Group</button>
+          </form>
+        </div>
+      </section>
+      <section id="room" class="room hidden">
+        <header class="topbar">
+          <div><p class="eyebrow">Group Code</p><button id="copyCode" class="code-button" type="button"></button><div class="room-meta"><span id="connectionStatus" class="status-pill">Connecting</span><span id="expiresAt">Expires soon</span></div></div>
+          <div class="top-actions">
+            <button id="copyInvite" type="button">Copy Invite</button>
+            <button id="copyRecovery" class="host-only" type="button">Copy Host Link</button>
+            <button id="leave" type="button">Leave</button>
+          </div>
+        </header>
+        <div class="game-grid">
+          <section class="buzzer-stage">
+            <div id="winner" class="winner">Ready</div>
+            <button id="buzzer" class="buzzer" type="button"><span>BUZZ</span></button>
+            <p id="status" class="status">Waiting for a round.</p>
+          </section>
+          <aside class="control-panel">
+            <form id="profileForm" class="profile-form">
+              <h2>Your Look</h2>
+              <label>Name<input id="roomName" autocomplete="nickname" maxlength="32" /></label>
+              <label>Color<input id="roomColor" type="color" value="#2ec4b6" /></label>
+              <button type="submit">Save</button>
+            </form>
+            <div class="host-controls host-only">
+              <button id="reset" class="primary" type="button">Reset</button>
+              <button id="resetRounds" type="button">Reset Round Count</button>
+              <button id="lockAll" type="button">Lock Everyone</button>
+            </div>
+            <div><h2>Players</h2><div id="players" class="players"></div></div>
+            <div><h2>Buzz Order</h2><div id="buzzOrder" class="buzz-order"></div></div>
+          </aside>
+        </div>
+      </section>
+    </main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

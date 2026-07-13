@@ -1,0 +1,18 @@
+# Example route for publishing the buzzer service under an existing site.
+# Keep the Go service bound to loopback and proxy only the public path.
+
+http://stuff.kvanland.com:8080 {
+	bind 127.0.0.1
+
+	redir /buzzer-as-a-service /buzzer-as-a-service/
+	handle_path /buzzer-as-a-service/* {
+		request_body {
+			max_size 16KB
+		}
+		reverse_proxy 127.0.0.1:8097
+	}
+
+	root * /var/www/public
+	encode zstd gzip
+	file_server
+}
