@@ -374,6 +374,9 @@ func (s *Store) ResetRoundCount(code, hostToken string) (Snapshot, error) {
 func (s *Store) SetLockAll(code, hostToken string, locked bool) (Snapshot, error) {
 	return s.hostAction(code, hostToken, func(group *Group) {
 		group.LockedAll = locked
+		for _, player := range group.Players {
+			player.Locked = locked
+		}
 	})
 }
 

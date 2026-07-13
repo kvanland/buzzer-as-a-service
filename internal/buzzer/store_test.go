@@ -229,6 +229,34 @@ func TestLocksAndReset(t *testing.T) {
 	}
 }
 
+func TestBulkLockAllAppliesAndClearsIndividualLocks(t *testing.T) {
+	store := NewMemoryStore(time.Hour)
+	group, _ := store.CreateGroup("Host", "#ff4d6d")
+	player, _ := store.JoinGroup(group.Code, "Player", "#2ec4b6", "", "")
+
+	lockedSnapshot, err := store.SetLockAll(group.Code, group.HostToken, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !lockedSnapshot.LockedAll || !playerByID(lockedSnapshot, group.PlayerID).Locked || !playerByID(lockedSnapshot, player.PlayerID).Locked {
+		t.Fatalf("bulk lock did not lock every player: %+v", lockedSnapshot)
+	}
+
+	if _, err := store.SetPlayerLock(group.Code, group.HostToken, player.PlayerID, true); err != nil {
+		t.Fatal(err)
+	}
+	unlockedSnapshot, err := store.SetLockAll(group.Code, group.HostToken, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unlockedSnapshot.LockedAll || playerByID(unlockedSnapshot, group.PlayerID).Locked || playerByID(unlockedSnapshot, player.PlayerID).Locked {
+		t.Fatalf("bulk unlock did not clear every lock: %+v", unlockedSnapshot)
+	}
+	if result, err := store.Buzz(group.Code, player.PlayerID, player.PlayerToken); err != nil || !result.Accepted {
+		t.Fatalf("buzz after bulk unlock = %+v err=%v, want accepted", result, err)
+	}
+}
+
 func TestResetRoundCountClearsBuzzesAndReturnsToOne(t *testing.T) {
 	store := NewMemoryStore(time.Hour)
 	group, _ := store.CreateGroup("Host", "#ff4d6d")

@@ -156,7 +156,8 @@ function render(snapshot) {
   const myBuzz = currentSession ? buzzes.find((buzz) => buzz.playerId === currentSession.playerId) : null;
   buzzer.disabled = Boolean(removed || snapshot.lockedAll || me?.locked || myBuzz);
   statusLine.textContent = removed ? "Ask the host for a new invite." : statusText(snapshot, me, myBuzz);
-  lockAllButton.textContent = snapshot.lockedAll ? "Unlock Everyone" : "Lock Everyone";
+  const anyLocks = snapshot.lockedAll || snapshot.players.some((player) => player.locked);
+  lockAllButton.textContent = anyLocks ? "Unlock Everyone" : "Lock Everyone";
   setProfileDisabled(removed);
   if (removed) {
     localStorage.removeItem(storageKey);
@@ -267,7 +268,8 @@ async function resetRoundCount() {
 
 async function toggleLockAll() {
   enableFeedback();
-  render(await hostAPI("lock-all", { locked: !state.lockedAll }));
+  const anyLocks = state?.lockedAll || state?.players?.some((player) => player.locked);
+  render(await hostAPI("lock-all", { locked: !anyLocks }));
 }
 
 async function setPlayerLock(playerId, locked) {
