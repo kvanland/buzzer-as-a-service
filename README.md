@@ -9,7 +9,9 @@ https://stuff.kvanland.com/buzzer-as-a-service/
 - Create a group and share a group code.
 - Join as a player with a name and color.
 - Live first-buzz and ordered buzz-in list per round.
+- Host-selectable written-answer rounds with automatic, host-only reveal after every player submits.
 - Host controls for reset, round-count reset, global lock, individual lock, and player removal.
+- Authenticated voluntary leave, reconnect-safe presence heartbeats, and stale-player indicators for hosts.
 - Browser reconnect support for host and players.
 - JSON-backed group persistence with expiry.
 - Mobile and desktop responsive UI.

@@ -1,0 +1,15 @@
+textarea,select{font:inherit;width:100%;min-height:46px;border:2px solid var(--line);border-radius:8px;padding:0 12px;color:var(--ink);background:#fff}
+textarea{padding:12px;resize:vertical;line-height:1.45}
+.answer-panel{width:100%;align-self:stretch;display:grid;align-items:center}
+.answer-form{width:min(100%,620px);margin:auto;display:grid;gap:14px;text-align:left}
+.answer-form button{justify-self:end;padding:0 20px}
+.answer-progress{margin:0 0 14px;color:var(--muted);font-weight:850}
+.answer-results{display:grid;gap:12px;text-align:left}
+.answer-card{border:2px solid var(--line);border-radius:8px;padding:14px;background:#fff}
+.answer-card-head{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.answer-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.45}
+.mode-picker{flex:1 0 100%}
+.mode-picker select{font-weight:750}
+.submitted-badge{color:#11766d}
+
+@media (max-width:860px){.answer-panel{min-height:0;overflow-y:auto}.answer-form button{justify-self:stretch}}

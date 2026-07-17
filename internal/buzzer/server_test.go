@@ -64,6 +64,54 @@ func TestHTTPCreateJoinBuzzResetFlow(t *testing.T) {
 	}
 }
 
+func TestHTTPAnswerModeFlow(t *testing.T) {
+	store := NewMemoryStore(time.Hour)
+	server := testServer(t, store)
+
+	create := postJSON(t, server, "/api/groups", `{"hostName":"Host"}`, http.StatusCreated)
+	var created CreateResult
+	mustDecode(t, create, &created)
+	join := postJSON(t, server, "/api/groups/"+created.Code+"/join", `{"name":"Player"}`, http.StatusOK)
+	var joined JoinResult
+	mustDecode(t, join, &joined)
+
+	modeBody := `{"hostToken":"` + created.HostToken + `","mode":"answers"}`
+	mode := postJSON(t, server, "/api/groups/"+created.Code+"/mode", modeBody, http.StatusOK)
+	var snapshot Snapshot
+	mustDecode(t, mode, &snapshot)
+	if snapshot.Mode != ModeAnswers {
+		t.Fatalf("mode = %q, want answers", snapshot.Mode)
+	}
+
+	answerBody := `{"playerId":"` + joined.PlayerID + `","playerToken":"` + joined.PlayerToken + `","text":"A secret answer"}`
+	answer := postJSON(t, server, "/api/groups/"+created.Code+"/answer", answerBody, http.StatusOK)
+	if strings.Contains(answer, "A secret answer") {
+		t.Fatalf("submission response exposed answer text: %s", answer)
+	}
+	var submitted AnswerResult
+	mustDecode(t, answer, &submitted)
+	if !submitted.Snapshot.AnswersRevealed {
+		t.Fatalf("single player answer did not reveal: %+v", submitted.Snapshot)
+	}
+
+	answersBody := `{"hostToken":"` + created.HostToken + `"}`
+	answers := postJSON(t, server, "/api/groups/"+created.Code+"/answers", answersBody, http.StatusOK)
+	var hostResult HostAnswersResult
+	mustDecode(t, answers, &hostResult)
+	if len(hostResult.Answers) != 1 || hostResult.Answers[0].Text != "A secret answer" {
+		t.Fatalf("host answer result = %+v", hostResult)
+	}
+	postJSON(t, server, "/api/groups/"+created.Code+"/answers", `{"hostToken":"wrong"}`, http.StatusUnauthorized)
+
+	heartbeatBody := `{"playerId":"` + joined.PlayerID + `","playerToken":"` + joined.PlayerToken + `"}`
+	postJSON(t, server, "/api/groups/"+created.Code+"/heartbeat", heartbeatBody, http.StatusOK)
+	left := postJSON(t, server, "/api/groups/"+created.Code+"/leave", heartbeatBody, http.StatusOK)
+	mustDecode(t, left, &snapshot)
+	if len(snapshot.Players) != 1 || snapshot.SubmittedCount != 0 {
+		t.Fatalf("voluntary leave did not remove player state: %+v", snapshot)
+	}
+}
+
 func TestHTTPCreateGroupLimitReturnsTooManyRequests(t *testing.T) {
 	store := NewMemoryStore(time.Hour)
 	server := testServer(t, store)

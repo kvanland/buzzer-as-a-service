@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -20,6 +21,9 @@ const (
 	maxPlayersPerGroup     = 64
 	maxSubscribersPerGroup = 128
 	maxTotalSubscribers    = 1000
+	maxAnswerLength        = 1000
+	ModeBuzzer             = "buzzer"
+	ModeAnswers            = "answers"
 )
 
 var (
@@ -41,16 +45,19 @@ type Store struct {
 }
 
 type Group struct {
-	Code         string             `json:"code"`
-	CreatedAt    time.Time          `json:"createdAt"`
-	LastActivity time.Time          `json:"lastActivity"`
-	ExpiresAt    time.Time          `json:"expiresAt"`
-	Host         HostSession        `json:"host"`
-	Players      map[string]*Player `json:"players"`
-	LockedAll    bool               `json:"lockedAll"`
-	FirstBuzz    *Buzz              `json:"firstBuzz,omitempty"`
-	Buzzes       []Buzz             `json:"buzzes"`
-	Round        int                `json:"round"`
+	Code            string             `json:"code"`
+	CreatedAt       time.Time          `json:"createdAt"`
+	LastActivity    time.Time          `json:"lastActivity"`
+	ExpiresAt       time.Time          `json:"expiresAt"`
+	Host            HostSession        `json:"host"`
+	Players         map[string]*Player `json:"players"`
+	LockedAll       bool               `json:"lockedAll"`
+	FirstBuzz       *Buzz              `json:"firstBuzz,omitempty"`
+	Buzzes          []Buzz             `json:"buzzes"`
+	Round           int                `json:"round"`
+	Mode            string             `json:"mode"`
+	Answers         map[string]Answer  `json:"answers,omitempty"`
+	AnswersRevealed bool               `json:"answersRevealed"`
 }
 
 type HostSession struct {
@@ -77,24 +84,38 @@ type Buzz struct {
 	Order      int       `json:"order"`
 }
 
+type Answer struct {
+	PlayerID    string    `json:"playerId"`
+	PlayerName  string    `json:"playerName"`
+	Color       string    `json:"color"`
+	Text        string    `json:"text"`
+	SubmittedAt time.Time `json:"submittedAt"`
+}
+
 type Snapshot struct {
-	Code         string           `json:"code"`
-	ExpiresAt    time.Time        `json:"expiresAt"`
-	HostPlayerID string           `json:"hostPlayerId"`
-	LockedAll    bool             `json:"lockedAll"`
-	FirstBuzz    *Buzz            `json:"firstBuzz,omitempty"`
-	Buzzes       []Buzz           `json:"buzzes"`
-	Round        int              `json:"round"`
-	Players      []PlayerSnapshot `json:"players"`
+	Code                string           `json:"code"`
+	ExpiresAt           time.Time        `json:"expiresAt"`
+	HostPlayerID        string           `json:"hostPlayerId"`
+	LockedAll           bool             `json:"lockedAll"`
+	FirstBuzz           *Buzz            `json:"firstBuzz,omitempty"`
+	Buzzes              []Buzz           `json:"buzzes"`
+	Round               int              `json:"round"`
+	Players             []PlayerSnapshot `json:"players"`
+	Mode                string           `json:"mode"`
+	AnswersRevealed     bool             `json:"answersRevealed"`
+	SubmittedCount      int              `json:"submittedCount"`
+	ExpectedAnswerCount int              `json:"expectedAnswerCount"`
 }
 
 type PlayerSnapshot struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Color    string `json:"color"`
-	Locked   bool   `json:"locked"`
-	IsHost   bool   `json:"isHost"`
-	LastSeen string `json:"lastSeen"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Color      string    `json:"color"`
+	Locked     bool      `json:"locked"`
+	IsHost     bool      `json:"isHost"`
+	LastSeen   string    `json:"lastSeen"`
+	LastSeenAt time.Time `json:"lastSeenAt"`
+	Submitted  bool      `json:"submitted"`
 }
 
 type CreateResult struct {
@@ -115,6 +136,15 @@ type BuzzResult struct {
 	Snapshot Snapshot `json:"snapshot"`
 	Accepted bool     `json:"accepted"`
 	Reason   string   `json:"reason,omitempty"`
+}
+
+type AnswerResult struct {
+	Snapshot Snapshot `json:"snapshot"`
+}
+
+type HostAnswersResult struct {
+	Snapshot Snapshot `json:"snapshot"`
+	Answers  []Answer `json:"answers"`
 }
 
 func NewStore(path string, ttl time.Duration) (*Store, error) {
@@ -185,6 +215,8 @@ func (s *Store) CreateGroup(hostName, color string) (CreateResult, error) {
 		LockedAll: false,
 		Buzzes:    []Buzz{},
 		Round:     1,
+		Mode:      ModeBuzzer,
+		Answers:   make(map[string]Answer),
 	}
 	s.groups[code] = group
 	if err := s.saveLocked(); err != nil {
@@ -291,6 +323,26 @@ func (s *Store) PlayerReconnect(code, playerID, playerToken string) (JoinResult,
 	return JoinResult{Snapshot: snapshotOf(group, now), PlayerID: player.ID, PlayerToken: player.Token}, nil
 }
 
+func (s *Store) Heartbeat(code, playerID, playerToken string) (Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	group, err := s.groupLocked(code)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	player, err := authorizePlayer(group, playerID, playerToken)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	now := s.touchLocked(group)
+	player.LastSeen = now
+	// Presence is intentionally ephemeral. Avoid rewriting the entire persisted
+	// room store for every heartbeat while still keeping the live room active.
+	s.notifyLocked(group.Code)
+	return snapshotOf(group, now), nil
+}
+
 func (s *Store) UpdatePlayer(code, playerID, playerToken, name, color string) (JoinResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -327,6 +379,9 @@ func (s *Store) Buzz(code, playerID, playerToken string) (BuzzResult, error) {
 	}
 	now := s.touchLocked(group)
 	player.LastSeen = now
+	if group.Mode != ModeBuzzer {
+		return BuzzResult{Snapshot: snapshotOf(group, now), Accepted: false, Reason: "room is not in buzzer mode"}, nil
+	}
 
 	if group.LockedAll || player.Locked {
 		return BuzzResult{Snapshot: snapshotOf(group, now), Accepted: false, Reason: ErrLocked.Error()}, nil
@@ -355,18 +410,86 @@ func (s *Store) Buzz(code, playerID, playerToken string) (BuzzResult, error) {
 	return BuzzResult{Snapshot: snapshotOf(group, now), Accepted: true}, nil
 }
 
+func (s *Store) SubmitAnswer(code, playerID, playerToken, text string) (AnswerResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	group, err := s.groupLocked(code)
+	if err != nil {
+		return AnswerResult{}, err
+	}
+	player, err := authorizePlayer(group, playerID, playerToken)
+	if err != nil {
+		return AnswerResult{}, err
+	}
+	if group.Mode != ModeAnswers || group.AnswersRevealed || player.ID == group.Host.PlayerID {
+		return AnswerResult{}, ErrInvalid
+	}
+	answerText, ok := cleanAnswer(text)
+	if !ok {
+		return AnswerResult{}, ErrInvalid
+	}
+	now := s.touchLocked(group)
+	player.LastSeen = now
+	if group.Answers == nil {
+		group.Answers = make(map[string]Answer)
+	}
+	group.Answers[player.ID] = Answer{PlayerID: player.ID, PlayerName: player.Name, Color: player.Color, Text: answerText, SubmittedAt: now}
+	revealAnswersIfCompleteLocked(group)
+	if err := s.saveLocked(); err != nil {
+		return AnswerResult{}, err
+	}
+	s.notifyLocked(group.Code)
+	return AnswerResult{Snapshot: snapshotOf(group, now)}, nil
+}
+
+func (s *Store) SetMode(code, hostToken, mode string) (Snapshot, error) {
+	if mode != ModeBuzzer && mode != ModeAnswers {
+		return Snapshot{}, ErrInvalid
+	}
+	return s.hostAction(code, hostToken, func(group *Group) {
+		if group.Mode == mode {
+			return
+		}
+		group.Mode = mode
+		clearRoundLocked(group)
+	})
+}
+
+func (s *Store) HostAnswers(code, hostToken string) (HostAnswersResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	group, err := s.groupLocked(code)
+	if err != nil {
+		return HostAnswersResult{}, err
+	}
+	if group.Host.Token != hostToken {
+		return HostAnswersResult{}, ErrUnauthorized
+	}
+	now := s.now()
+	result := HostAnswersResult{Snapshot: snapshotOf(group, now), Answers: []Answer{}}
+	if !group.AnswersRevealed {
+		return result, nil
+	}
+	for _, answer := range group.Answers {
+		result.Answers = append(result.Answers, answer)
+	}
+	sort.Slice(result.Answers, func(i, j int) bool {
+		return result.Answers[i].SubmittedAt.Before(result.Answers[j].SubmittedAt)
+	})
+	return result, nil
+}
+
 func (s *Store) Reset(code, hostToken string) (Snapshot, error) {
 	return s.hostAction(code, hostToken, func(group *Group) {
-		group.FirstBuzz = nil
-		group.Buzzes = []Buzz{}
+		clearRoundLocked(group)
 		group.Round++
 	})
 }
 
 func (s *Store) ResetRoundCount(code, hostToken string) (Snapshot, error) {
 	return s.hostAction(code, hostToken, func(group *Group) {
-		group.FirstBuzz = nil
-		group.Buzzes = []Buzz{}
+		clearRoundLocked(group)
 		group.Round = 1
 	})
 }
@@ -406,8 +529,31 @@ func (s *Store) RemovePlayer(code, hostToken, playerID string) (Snapshot, error)
 		return Snapshot{}, ErrNotFound
 	}
 	now := s.touchLocked(group)
-	delete(group.Players, playerID)
-	removeBuzzesForPlayerLocked(group, playerID)
+	removePlayerLocked(group, playerID)
+	if err := s.saveLocked(); err != nil {
+		return Snapshot{}, err
+	}
+	s.notifyLocked(group.Code)
+	return snapshotOf(group, now), nil
+}
+
+func (s *Store) LeaveGroup(code, playerID, playerToken string) (Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	group, err := s.groupLocked(code)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	player, err := authorizePlayer(group, playerID, playerToken)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if player.ID == group.Host.PlayerID {
+		return Snapshot{}, ErrInvalid
+	}
+	now := s.touchLocked(group)
+	removePlayerLocked(group, player.ID)
 	if err := s.saveLocked(); err != nil {
 		return Snapshot{}, err
 	}
@@ -571,6 +717,12 @@ func (s *Store) load() error {
 		if group.Players == nil {
 			group.Players = make(map[string]*Player)
 		}
+		if group.Mode == "" {
+			group.Mode = ModeBuzzer
+		}
+		if group.Answers == nil {
+			group.Answers = make(map[string]Answer)
+		}
 	}
 	return nil
 }
@@ -622,6 +774,28 @@ func updatePlayerLocked(group *Group, player *Player, name, color string) {
 		group.FirstBuzz.PlayerName = player.Name
 		group.FirstBuzz.Color = player.Color
 	}
+	if answer, ok := group.Answers[player.ID]; ok {
+		answer.PlayerName = player.Name
+		answer.Color = player.Color
+		group.Answers[player.ID] = answer
+	}
+}
+
+func clearRoundLocked(group *Group) {
+	group.FirstBuzz = nil
+	group.Buzzes = []Buzz{}
+	group.Answers = make(map[string]Answer)
+	group.AnswersRevealed = false
+}
+
+func revealAnswersIfCompleteLocked(group *Group) {
+	if group.Mode != ModeAnswers || group.AnswersRevealed {
+		return
+	}
+	expected := len(group.Players) - 1
+	if len(group.Answers) == expected {
+		group.AnswersRevealed = true
+	}
 }
 
 func removeBuzzesForPlayerLocked(group *Group, playerID string) {
@@ -641,6 +815,13 @@ func removeBuzzesForPlayerLocked(group *Group, playerID string) {
 	group.FirstBuzz = &first
 }
 
+func removePlayerLocked(group *Group, playerID string) {
+	delete(group.Players, playerID)
+	removeBuzzesForPlayerLocked(group, playerID)
+	delete(group.Answers, playerID)
+	revealAnswersIfCompleteLocked(group)
+}
+
 func authorizePlayer(group *Group, playerID, tokenValue string) (*Player, error) {
 	player := group.Players[playerID]
 	if player == nil || player.Token != tokenValue {
@@ -653,12 +834,14 @@ func snapshotOf(group *Group, now time.Time) Snapshot {
 	players := make([]PlayerSnapshot, 0, len(group.Players))
 	for _, player := range group.Players {
 		players = append(players, PlayerSnapshot{
-			ID:       player.ID,
-			Name:     player.Name,
-			Color:    player.Color,
-			Locked:   player.Locked,
-			IsHost:   player.ID == group.Host.PlayerID,
-			LastSeen: relativeTime(now, player.LastSeen),
+			ID:         player.ID,
+			Name:       player.Name,
+			Color:      player.Color,
+			Locked:     player.Locked,
+			IsHost:     player.ID == group.Host.PlayerID,
+			LastSeen:   relativeTime(now, player.LastSeen),
+			LastSeenAt: player.LastSeen,
+			Submitted:  group.Answers[player.ID].PlayerID != "",
 		})
 	}
 	sort.Slice(players, func(i, j int) bool {
@@ -674,16 +857,32 @@ func snapshotOf(group *Group, now time.Time) Snapshot {
 		first := *group.FirstBuzz
 		firstBuzz = &first
 	}
-	return Snapshot{
-		Code:         group.Code,
-		ExpiresAt:    group.ExpiresAt,
-		HostPlayerID: group.Host.PlayerID,
-		LockedAll:    group.LockedAll,
-		FirstBuzz:    firstBuzz,
-		Buzzes:       buzzes,
-		Round:        group.Round,
-		Players:      players,
+	expectedAnswers := len(group.Players) - 1
+	if group.AnswersRevealed {
+		expectedAnswers = len(group.Answers)
 	}
+	return Snapshot{
+		Code:                group.Code,
+		ExpiresAt:           group.ExpiresAt,
+		HostPlayerID:        group.Host.PlayerID,
+		LockedAll:           group.LockedAll,
+		FirstBuzz:           firstBuzz,
+		Buzzes:              buzzes,
+		Round:               group.Round,
+		Players:             players,
+		Mode:                group.Mode,
+		AnswersRevealed:     group.AnswersRevealed,
+		SubmittedCount:      len(group.Answers),
+		ExpectedAnswerCount: expectedAnswers,
+	}
+}
+
+func cleanAnswer(answer string) (string, bool) {
+	answer = strings.TrimSpace(answer)
+	if answer == "" || utf8.RuneCountInString(answer) > maxAnswerLength {
+		return "", false
+	}
+	return answer, true
 }
 
 func cleanName(name, fallback string) string {

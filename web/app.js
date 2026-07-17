@@ -22,6 +22,16 @@ const roomName = document.querySelector("#roomName");
 const roomColor = document.querySelector("#roomColor");
 const connectionStatus = document.querySelector("#connectionStatus");
 const expiresAt = document.querySelector("#expiresAt");
+const buzzerViewTab = document.querySelector("#buzzerViewTab");
+const roomViewTab = document.querySelector("#roomViewTab");
+const answerPanel = document.querySelector("#answerPanel");
+const answerForm = document.querySelector("#answerForm");
+const answerText = document.querySelector("#answerText");
+const submitAnswerButton = document.querySelector("#submitAnswer");
+const hostAnswerPanel = document.querySelector("#hostAnswerPanel");
+const answerProgress = document.querySelector("#answerProgress");
+const answerResults = document.querySelector("#answerResults");
+const gameMode = document.querySelector("#gameMode");
 
 const storageKey = "buzzer-as-a-service-session";
 let session = null;
@@ -31,6 +41,13 @@ let audioContext = null;
 let renderReady = false;
 let lastFirstKey = "";
 let lastRound = 0;
+let lastMode = "";
+let answerFetchKey = "";
+let answerFetchSequence = 0;
+let heartbeatTimer = null;
+
+const heartbeatEveryMs = 60000;
+const possiblyDisconnectedAfterMs = 150000;
 
 startTab.addEventListener("click", () => selectTab("start"));
 joinTab.addEventListener("click", () => selectTab("join"));
@@ -45,10 +62,20 @@ buzzer.addEventListener("click", buzz);
 resetButton.addEventListener("click", resetRound);
 resetRoundsButton.addEventListener("click", resetRoundCount);
 lockAllButton.addEventListener("click", toggleLockAll);
+buzzerViewTab.addEventListener("click", () => setMobileView("buzzer"));
+roomViewTab.addEventListener("click", () => setMobileView("room"));
+answerForm.addEventListener("submit", submitAnswer);
+gameMode.addEventListener("change", changeGameMode);
 
 restoreFromHash();
 restoreLocalSession();
-setInterval(updateExpiry, 30000);
+setInterval(() => {
+  updateExpiry();
+  refreshPresence();
+}, 30000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) sendHeartbeat();
+});
 
 function selectTab(tab) {
   const start = tab === "start";
@@ -125,10 +152,26 @@ async function restoreFromHash() {
 function enterRoom(snapshot) {
   entry.classList.add("hidden");
   room.classList.remove("hidden");
+  setMobileView("buzzer", false);
   document.querySelectorAll(".host-only").forEach((node) => node.classList.toggle("hidden", session.role !== "host"));
   renderReady = false;
+  answerFetchKey = "";
+  answerResults.innerHTML = "";
   connectEvents();
+  startHeartbeat();
   render(snapshot);
+}
+
+function setMobileView(view, focus = true) {
+  const showBuzzer = view === "buzzer";
+  room.dataset.mobileView = view;
+  buzzerViewTab.classList.toggle("active", showBuzzer);
+  roomViewTab.classList.toggle("active", !showBuzzer);
+  buzzerViewTab.setAttribute("aria-selected", String(showBuzzer));
+  roomViewTab.setAttribute("aria-selected", String(!showBuzzer));
+  if (focus && window.matchMedia("(max-width: 860px)").matches) {
+    room.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 function connectEvents() {
@@ -150,12 +193,23 @@ function render(snapshot) {
   const buzzes = snapshot.buzzes || [];
   const firstKey = first ? `${snapshot.round}:${first.playerId}:${first.at}` : "";
   const removed = Boolean(currentSession && !me);
+  const answerMode = snapshot.mode === "answers";
+  const isHost = currentSession?.role === "host";
 
-  winner.classList.toggle("hot", Boolean(first) && !removed);
-  winner.textContent = removed ? "Removed from group" : first ? `${first.playerName} buzzed first!` : snapshot.lockedAll ? "Locked" : "Ready";
+  if (renderReady && (snapshot.round !== lastRound || snapshot.mode !== lastMode)) answerText.value = "";
+
+  document.querySelectorAll(".buzzer-mode").forEach((node) => node.classList.toggle("hidden", answerMode));
+  answerPanel.classList.toggle("hidden", !answerMode);
+  gameMode.value = snapshot.mode || "buzzer";
+  buzzerViewTab.textContent = answerMode ? "Answer" : "Buzzer";
+  resetButton.textContent = answerMode ? "New Answer Round" : "Reset";
+  lockAllButton.classList.toggle("hidden", answerMode);
+
+  winner.classList.toggle("hot", !answerMode && Boolean(first) && !removed);
+  winner.textContent = removed ? "Removed from group" : answerMode ? answerWinnerText(snapshot, isHost) : first ? `${first.playerName} buzzed first!` : snapshot.lockedAll ? "Locked" : "Ready";
   const myBuzz = currentSession ? buzzes.find((buzz) => buzz.playerId === currentSession.playerId) : null;
-  buzzer.disabled = Boolean(removed || snapshot.lockedAll || me?.locked || myBuzz);
-  statusLine.textContent = removed ? "Ask the host for a new invite." : statusText(snapshot, me, myBuzz);
+  buzzer.disabled = Boolean(answerMode || removed || snapshot.lockedAll || me?.locked || myBuzz);
+  statusLine.textContent = removed ? "Ask the host for a new invite." : answerMode ? answerStatusText(snapshot, me, isHost) : statusText(snapshot, me, myBuzz);
   const anyLocks = snapshot.lockedAll || snapshot.players.some((player) => player.locked);
   lockAllButton.textContent = anyLocks ? "Unlock Everyone" : "Lock Everyone";
   setProfileDisabled(removed);
@@ -164,6 +218,7 @@ function render(snapshot) {
     document.querySelectorAll(".host-only").forEach((node) => node.classList.add("hidden"));
     if (events) events.close();
     events = null;
+    stopHeartbeat();
     session = null;
     setConnection("Removed", "warn");
   } else {
@@ -173,6 +228,7 @@ function render(snapshot) {
 
   renderPlayers(snapshot.players, currentSession && !removed ? currentSession.role : "");
   renderBuzzOrder(buzzes);
+  renderAnswerMode(snapshot, me, isHost, removed);
 
   if (!removed && renderReady) {
     if (firstKey && firstKey !== lastFirstKey) feedback("first");
@@ -181,6 +237,63 @@ function render(snapshot) {
   renderReady = true;
   lastFirstKey = firstKey;
   lastRound = snapshot.round;
+  lastMode = snapshot.mode;
+}
+
+function answerWinnerText(snapshot, isHost) {
+  if (snapshot.answersRevealed) return isHost ? "Answers revealed!" : "All answers are in!";
+  return `${snapshot.submittedCount} of ${snapshot.expectedAnswerCount} submitted`;
+}
+
+function answerStatusText(snapshot, me, isHost) {
+  if (isHost) return snapshot.answersRevealed ? "Review the answers below." : "Answers stay hidden until everyone submits.";
+  if (snapshot.answersRevealed) return "The host can now see the answers.";
+  if (me?.submitted) return "Answer submitted. You can update it until reveal.";
+  return "Write an answer and submit when ready.";
+}
+
+function renderAnswerMode(snapshot, me, isHost, removed) {
+  if (snapshot.mode !== "answers") {
+    answerFetchKey = "";
+    answerResults.innerHTML = "";
+    return;
+  }
+  answerForm.classList.toggle("hidden", isHost || removed || snapshot.answersRevealed);
+  hostAnswerPanel.classList.toggle("hidden", !isHost);
+  answerText.disabled = Boolean(removed || snapshot.answersRevealed);
+  submitAnswerButton.textContent = me?.submitted ? "Update Answer" : "Submit Answer";
+  answerProgress.textContent = snapshot.answersRevealed ? "Everyone has submitted." : `Waiting for ${snapshot.expectedAnswerCount - snapshot.submittedCount} more answer${snapshot.expectedAnswerCount - snapshot.submittedCount === 1 ? "" : "s"}.`;
+  if (!isHost || !snapshot.answersRevealed) {
+    answerResults.innerHTML = "";
+    answerFetchKey = "";
+    return;
+  }
+  loadHostAnswers(snapshot);
+}
+
+async function loadHostAnswers(snapshot) {
+  const submittedPlayers = snapshot.players.filter((player) => player.submitted).map((player) => `${player.id}:${player.name}:${player.color}`).join("|");
+  const key = `${snapshot.round}:${snapshot.submittedCount}:${snapshot.expectedAnswerCount}:${submittedPlayers}`;
+  if (answerFetchKey === key) return;
+  answerFetchKey = key;
+  const sequence = ++answerFetchSequence;
+  try {
+    const result = await hostAPI("answers", {});
+    if (sequence !== answerFetchSequence || state?.mode !== "answers" || !state?.answersRevealed) return;
+    renderAnswerResults(result.answers || []);
+  } catch {
+    if (answerFetchKey === key) answerFetchKey = "";
+  }
+}
+
+function renderAnswerResults(answers) {
+  answerResults.innerHTML = "";
+  answers.forEach((answer) => {
+    const card = document.createElement("article");
+    card.className = "answer-card";
+    card.innerHTML = `<div class="answer-card-head"><span class="swatch" style="background:${answer.color}"></span><span class="player-name">${escapeHTML(answer.playerName)}</span></div><p class="answer-text">${escapeHTML(answer.text)}</p>`;
+    answerResults.append(card);
+  });
 }
 
 function renderPlayers(playerList, role) {
@@ -189,7 +302,8 @@ function renderPlayers(playerList, role) {
     const row = document.createElement("div");
     row.className = "player-row";
     const canRemove = role === "host" && !player.isHost;
-    row.innerHTML = `<span class="swatch" style="background:${player.color}"></span><div><div class="player-name">${escapeHTML(player.name)}${player.isHost ? " - Host" : ""}</div><div class="player-meta">${player.locked ? "locked" : "ready"} - ${player.lastSeen}</div></div><div class="player-actions host-only ${role === "host" ? "" : "hidden"}"><button data-action="lock" type="button">${player.locked ? "Unlock" : "Lock"}</button><button class="danger ${canRemove ? "" : "hidden"}" data-action="remove" type="button">Remove</button></div>`;
+    const playerState = state?.mode === "answers" && !player.isHost ? (player.submitted ? "submitted" : state?.answersRevealed ? "joined after reveal" : "waiting") : (player.locked ? "locked" : "ready");
+    row.innerHTML = `<span class="swatch" style="background:${player.color}"></span><div><div class="player-name">${escapeHTML(player.name)}${player.isHost ? " - Host" : ""}</div><div class="player-meta ${player.submitted ? "submitted-badge" : ""}">${playerState} - ${presenceText(player, role)}</div></div><div class="player-actions host-only ${role === "host" ? "" : "hidden"}"><button class="${state?.mode === "answers" ? "hidden" : ""}" data-action="lock" type="button">${player.locked ? "Unlock" : "Lock"}</button><button class="danger ${canRemove ? "" : "hidden"}" data-action="remove" type="button">Remove</button></div>`;
     row.querySelector('[data-action="lock"]').addEventListener("click", () => setPlayerLock(player.id, !player.locked));
     const remove = row.querySelector('[data-action="remove"]');
     if (remove) remove.addEventListener("click", () => removePlayer(player));
@@ -255,9 +369,37 @@ async function buzz() {
   render(result.snapshot);
 }
 
+async function submitAnswer(event) {
+  event.preventDefault();
+  const text = answerText.value.trim();
+  if (!text) {
+    showToast("Enter an answer first.");
+    return;
+  }
+  const result = await api(`api/groups/${session.code}/answer`, { playerId: session.playerId, playerToken: session.playerToken, text });
+  render(result.snapshot);
+  showToast(result.snapshot.answersRevealed ? "Submitted. Answers revealed." : "Answer submitted.");
+}
+
+async function changeGameMode() {
+  const mode = gameMode.value;
+  const hasRoundActivity = Boolean(state?.buzzes?.length || state?.submittedCount);
+  if (hasRoundActivity && !confirm("Changing modes clears the current round. Continue?")) {
+    gameMode.value = state?.mode || "buzzer";
+    return;
+  }
+  try {
+    render(await hostAPI("mode", { mode }));
+    answerText.value = "";
+  } catch {
+    gameMode.value = state?.mode || "buzzer";
+  }
+}
+
 async function resetRound() {
   enableFeedback();
   render(await hostAPI("reset", {}));
+  answerText.value = "";
 }
 
 async function resetRoundCount() {
@@ -287,14 +429,68 @@ function hostAPI(action, body) { return api(`api/groups/${session.code}/${action
 function copyInviteLink() { copyText(`${location.origin}${basePath()}#join=${state.code}`); }
 function copyHostLink() { copyText(`${location.origin}${basePath()}#host=${btoa(JSON.stringify({ code: session.code, hostToken: session.hostToken }))}`); }
 
-function leaveRoom() {
+async function leaveRoom() {
+  const leavingSession = session;
+  if (leavingSession?.role === "player") {
+    leaveButton.disabled = true;
+    try {
+      await api(`api/groups/${leavingSession.code}/leave`, { playerId: leavingSession.playerId, playerToken: leavingSession.playerToken });
+    } catch {
+      leaveButton.disabled = false;
+      return;
+    }
+  }
+  exitRoom();
+  leaveButton.disabled = false;
+}
+
+function exitRoom() {
   if (events) events.close();
   events = null;
+  stopHeartbeat();
   session = null;
   state = null;
   localStorage.removeItem(storageKey);
   room.classList.add("hidden");
   entry.classList.remove("hidden");
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatTimer = setInterval(sendHeartbeat, heartbeatEveryMs);
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+}
+
+async function sendHeartbeat() {
+  const activeSession = session;
+  if (!activeSession) return;
+  try {
+    await fetch(`api/groups/${activeSession.code}/heartbeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ playerId: activeSession.playerId, playerToken: activeSession.playerToken })
+    });
+  } catch {
+    // The live event stream owns connection messaging and reconnection.
+  }
+}
+
+function refreshPresence() {
+  if (!state?.players || !session) return;
+  renderPlayers(state.players, session.role);
+}
+
+function presenceText(player, role) {
+  const seenAt = new Date(player.lastSeenAt).getTime();
+  if (!Number.isFinite(seenAt)) return player.lastSeen;
+  const age = Math.max(0, Date.now() - seenAt);
+  const relative = age < 60000 ? "just now" : age < 3600000 ? `${Math.floor(age / 60000)}m ago` : `${Math.floor(age / 3600000)}h ago`;
+  if (role === "host" && !player.isHost && age >= possiblyDisconnectedAfterMs) return `possibly disconnected - ${relative}`;
+  return relative;
 }
 
 async function api(path, body) {

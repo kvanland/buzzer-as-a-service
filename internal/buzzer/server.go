@@ -98,12 +98,22 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request, path string) 
 		s.handleJoin(w, r, code)
 	case action == "player-session" && r.Method == http.MethodPost:
 		s.handlePlayerSession(w, r, code)
+	case action == "heartbeat" && r.Method == http.MethodPost:
+		s.handleHeartbeat(w, r, code)
+	case action == "leave" && r.Method == http.MethodPost:
+		s.handleLeave(w, r, code)
 	case action == "host-session" && r.Method == http.MethodPost:
 		s.handleHostSession(w, r, code)
 	case action == "profile" && r.Method == http.MethodPost:
 		s.handleProfile(w, r, code)
 	case action == "buzz" && r.Method == http.MethodPost:
 		s.handleBuzz(w, r, code)
+	case action == "answer" && r.Method == http.MethodPost:
+		s.handleAnswer(w, r, code)
+	case action == "answers" && r.Method == http.MethodPost:
+		s.handleHostAnswers(w, r, code)
+	case action == "mode" && r.Method == http.MethodPost:
+		s.handleMode(w, r, code)
 	case action == "reset" && r.Method == http.MethodPost:
 		s.handleReset(w, r, code)
 	case action == "reset-round-count" && r.Method == http.MethodPost:
@@ -153,6 +163,38 @@ func (s *Server) handlePlayerSession(w http.ResponseWriter, r *http.Request, cod
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, code string) {
+	var req struct {
+		PlayerID    string `json:"playerId"`
+		PlayerToken string `json:"playerToken"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	snapshot, err := s.store.Heartbeat(code, req.PlayerID, req.PlayerToken)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleLeave(w http.ResponseWriter, r *http.Request, code string) {
+	var req struct {
+		PlayerID    string `json:"playerId"`
+		PlayerToken string `json:"playerToken"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	snapshot, err := s.store.LeaveGroup(code, req.PlayerID, req.PlayerToken)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
 func (s *Server) handleHostSession(w http.ResponseWriter, r *http.Request, code string) {
 	var req struct {
 		HostToken string `json:"hostToken"`
@@ -200,6 +242,54 @@ func (s *Server) handleBuzz(w http.ResponseWriter, r *http.Request, code string)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request, code string) {
+	var req struct {
+		PlayerID    string `json:"playerId"`
+		PlayerToken string `json:"playerToken"`
+		Text        string `json:"text"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.store.SubmitAnswer(code, req.PlayerID, req.PlayerToken, req.Text)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleHostAnswers(w http.ResponseWriter, r *http.Request, code string) {
+	var req struct {
+		HostToken string `json:"hostToken"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.store.HostAnswers(code, req.HostToken)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleMode(w http.ResponseWriter, r *http.Request, code string) {
+	var req struct {
+		HostToken string `json:"hostToken"`
+		Mode      string `json:"mode"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	snapshot, err := s.store.SetMode(code, req.HostToken, req.Mode)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (s *Server) handleReset(w http.ResponseWriter, r *http.Request, code string) {
